@@ -105,7 +105,30 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_GATEWAY_URL: ${{ secrets.NEXT_PUBLIC_GATEWAY_URL }}
         run: |
-          sh ./ci-release-build.sh
+          echo "🚀 蝶儿强行接管构建流程..."
+          pnpm build
+          
+          echo "📦 开始智能打包..."
+          # 自动寻找隐藏的 standalone 产物目录（不管它是不是 monorepo 都能找到！）
+          STANDALONE_DIR=$(find . -path "*/.next/standalone" -type d | head -n 1)
+          if [ -z "$STANDALONE_DIR" ]; then
+            echo "❌ 致命错误：找不到 standalone 目录！"
+            exit 1
+          fi
+          
+          NEXT_DIR=$(dirname "$STANDALONE_DIR")
+          ROOT_DIR=$(dirname "$NEXT_DIR")
+          
+          mkdir -p assets deploy_standalone
+          # 组装黄金积木
+          cp -a "$STANDALONE_DIR/." ./deploy_standalone/
+          cp -a "$NEXT_DIR/static" ./deploy_standalone/.next/
+          [ -d "$ROOT_DIR/public" ] && cp -a "$ROOT_DIR/public" ./deploy_standalone/
+          
+          # 重命名并压缩
+          mv ./deploy_standalone ./standalone
+          zip -q -r assets/release.zip standalone
+          echo "✅ 蝶儿打包魔法大功告成！"
 
       # - uses: actions/upload-artifact@v4
       #   with:
