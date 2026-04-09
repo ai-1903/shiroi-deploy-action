@@ -36,6 +36,7 @@ jobs:
         run: |
           content=$(cat ${{ env.HASH_FILE }}) || true
           echo "hash_content=$content" >> "$GITHUB_OUTPUT"
+
   check:
     name: Check Should Rebuild
     runs-on: ubuntu-latest
@@ -47,7 +48,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: innei-dev/shiroi
-          token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
+          token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
           lfs: true
 
@@ -83,7 +84,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: innei-dev/shiroi
-          token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
+          token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
           lfs: true
 
@@ -97,8 +98,10 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
       - uses: jongwooo/next-cache@v1
+      
       - name: Install dependencies
         run: pnpm install
+        
       - name: Build project
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
@@ -109,7 +112,7 @@ jobs:
           pnpm build
           
           echo "📦 开始智能打包..."
-          # 自动寻找隐藏的 standalone 产物目录（不管它是不是 monorepo 都能找到！）
+          # 找 standalone 目录
           STANDALONE_DIR=$(find . -path "*/.next/standalone" -type d | head -n 1)
           if [ -z "$STANDALONE_DIR" ]; then
             echo "❌ 致命错误：找不到 standalone 目录！"
@@ -120,21 +123,40 @@ jobs:
           ROOT_DIR=$(dirname "$NEXT_DIR")
           
           mkdir -p assets deploy_standalone
-          # 组装黄金积木
           cp -a "$STANDALONE_DIR/." ./deploy_standalone/
           cp -a "$NEXT_DIR/static" ./deploy_standalone/.next/
           [ -d "$ROOT_DIR/public" ] && cp -a "$ROOT_DIR/public" ./deploy_standalone/
+          
+          echo "✨ 蝶儿施展魔法：凭空捏造 ecosystem.config.js..."
+          cat << 'EOF' > ./deploy_standalone/ecosystem.config.js
+          module.exports = {
+            apps: [
+              {
+                name: 'Shiroi',
+                script: './server.js',
+                cwd: __dirname,
+                exec_mode: 'fork',
+                instances: 1,
+                autorestart: true,
+                watch: false,
+                max_memory_restart: '256M',
+                env: {
+                  NODE_ENV: 'production',
+                  HOSTNAME: '0.0.0.0',
+                  PORT: process.env.PORT || 2323,
+                },
+                log_date_format: 'YYYY-MM-DD HH:mm:ss',
+                merge_logs: true,
+              },
+            ],
+          }
+          EOF
           
           # 重命名并压缩
           mv ./deploy_standalone ./standalone
           zip -q -r assets/release.zip standalone
           echo "✅ 蝶儿打包魔法大功告成！"
 
-      # - uses: actions/upload-artifact@v4
-      #   with:
-      #     name: dist
-      #     path: assets/release.zip
-      #     retention-days: 7
       - name: Cache Build Artifacts
         id: cache-primes
         uses: actions/cache/save@v4
@@ -156,11 +178,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      # - name: Download artifact
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: dist
-
       - name: Restore cached Build Artifacts
         id: cache-primes-restore
         uses: actions/cache/restore@v4
@@ -168,12 +185,12 @@ jobs:
           path: |
             assets
           key: ${{ github.run_number }}-release
+          
       - name: Move assets to root
         run: mv assets/release.zip release.zip
 
-      - name: Prepare standalone PM2 config
-        run: cp pm2/ecosystem.config.js ecosystem.config.js
-
+      # 注意这里！我已经把你原本那些报错的多余 copy 和 scp 步骤全删了！
+      # 我们只传一个 release.zip 过去就足够了，因为所有配置都在里面。
       - name: copy file via ssh password
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -185,20 +202,8 @@ jobs:
           source: 'release.zip'
           target: '/tmp/shiro'
 
-      - name: copy PM2 config via ssh password
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
-          password: ${{ secrets.PASSWORD }}
-          key: ${{ secrets.KEY }}
-          port: ${{ secrets.PORT }}
-          source: 'ecosystem.config.js'
-          target: '/tmp/shiro'
-
       - name: Exec deploy script with SSH
         uses: appleboy/ssh-action@master
-
         with:
           command_timeout: 5m
           host: ${{ secrets.HOST }}
@@ -211,37 +216,49 @@ jobs:
             source $HOME/.bashrc
             basedir=$HOME/shiro
             workdir=$basedir/${{ github.run_number }}
-            mkdir -p $workdir
-            mkdir -p $basedir/.cache
+            mkdir -p $workdir $basedir/.cache
+            
             mv /tmp/shiro/release.zip $workdir/release.zip
-            install -m 644 /tmp/shiro/ecosystem.config.js $basedir/ecosystem.config.js
             cd $workdir
-            unzip -qq -o $workdir/release.zip
-            rm -r /tmp/shiro
-            rm -rf $workdir/standalone/apps/web/.env
-            ln -s $HOME/shiro/.env $workdir/standalone/apps/web/.env
+            unzip -qq -o release.zip
+            rm -rf /tmp/shiro
+            
+            echo "🔧 正在部署配置文件..."
+            # 直接从刚刚解压的压缩包里拿出我们凭空捏造的 ecosystem 文件！
+            cp $workdir/standalone/ecosystem.config.js $basedir/ecosystem.config.js
+            
+            echo "🔍 智能搜寻 server.js 路径..."
+            # 魔法：自动寻找真正的应用目录，杜绝硬编码路径报错！
+            SERVER_JS_PATH=$(find $workdir/standalone -name "server.js" -not -path "*/node_modules/*" | head -n 1)
+            APP_DIR=$(dirname "$SERVER_JS_PATH")
+            
+            rm -rf $APP_DIR/.env
+            ln -s $HOME/shiro/.env $APP_DIR/.env
             export NEXT_SHARP_PATH=$(npm root -g)/sharp
-            # https://github.com/Unitech/pm2/issues/3054
-            # symlink workdir node entry file to basedir
-            ln -sf $workdir/standalone/apps/web/server.js $basedir/server.js
-            mkdir -p $workdir/standalone/apps/web/.next
-            rm -rf $workdir/standalone/apps/web/.next/cache
-            ln -sf $basedir/.cache $workdir/standalone/apps/web/.next/cache
+            
+            echo "🔗 建立运行层缓存与软链接..."
+            mkdir -p $APP_DIR/.next
+            rm -rf $APP_DIR/.next/cache
+            ln -sf $basedir/.cache $APP_DIR/.next/cache
+            ln -sf $SERVER_JS_PATH $basedir/server.js
+            
             cd $basedir
+            echo "🚀 启动项目..."
             if pm2 describe Shiroi >/dev/null 2>&1; then
               pm2 reload ecosystem.config.js --update-env
             else
               pm2 start ecosystem.config.js --update-env
             fi
+            
             rm $workdir/release.zip
             pm2 save
-            echo "Deployed successfully"
+            echo "✅ Deployed successfully"
 
       - name: After deploy script
         run: |
           hash=${{ needs.build.outputs.sha_short }}
-          # curl -X "POST" "https://mx.innei.in/api/v2/fn/shiro/new-version-hook" -H 'Content-Type: application/json' -d "{\"hash\": \"$hash\", \"key\": \"\"}"
           ${{ secrets.AFTER_DEPLOY_SCRIPT }}
+
   store:
     name: Store artifact commit version
     runs-on: ubuntu-latest
@@ -250,9 +267,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          persist-credentials: false # otherwise, the token used is the GITHUB_TOKEN, instead of your personal token
-          fetch-depth: 0 # otherwise, you will failed to push refs to dest repo
-      # Get the commit version from the build job
+          persist-credentials: false
+          fetch-depth: 0
       - name: Use outputs from build
         env:
           SHA_SHORT: ${{ needs.build.outputs.sha_short }}
@@ -263,7 +279,6 @@ jobs:
       - name: Write hash to file
         env:
           SHA_SHORT: ${{ needs.build.outputs.sha_short }}
-
         run: echo $SHA_SHORT > ${{ env.HASH_FILE }}
       - name: Commit files
         run: |
