@@ -116,13 +116,37 @@ jobs:
           mkdir -p "./deploy_standalone/$APP_DIR/.next"
           cp -rL "$NEXT_DIR/static" "./deploy_standalone/$APP_DIR/.next/static" 2>/dev/null || true
           
-          echo "✨ 蝶儿补救魔法：强行实体化被丢弃的 Shiki 依赖 (免疫 pnpm v10 软链陷阱)..."
-          mkdir -p ./deploy_standalone/node_modules
-          cp -rL node_modules/@shikijs ./deploy_standalone/node_modules/ 2>/dev/null || true
-          cp -rL node_modules/shiki ./deploy_standalone/node_modules/ 2>/dev/null || true
-          if [ -d "$APP_DIR/node_modules/@shikijs" ]; then
-            cp -rL "$APP_DIR/node_modules/@shikijs" "./deploy_standalone/node_modules/" 2>/dev/null || true
-          fi
+          echo "✨ 蝶儿补救魔法：动用 Node 引擎穿透 pnpm v10 虚拟层，精准捕获 Shiki 及其依赖！..."
+          # 利用单引号保护 Node 脚本，精准解析并提取底层依赖！
+          APP_DIR="$APP_DIR" node -e '
+            const path = require("path");
+            const { execSync } = require("child_process");
+            const appDir = path.resolve(process.env.APP_DIR);
+            
+            function copyPkg(pkgName, resolveFrom) {
+              try {
+                // 利用 require.resolve 穿透 pnpm 的软链迷宫找到真实的 package.json
+                const pkgJson = require.resolve(pkgName + "/package.json", { paths: [resolveFrom] });
+                const src = path.dirname(pkgJson);
+                const dest = path.resolve("./deploy_standalone/node_modules", pkgName);
+                
+                execSync("mkdir -p \"" + path.dirname(dest) + "\"");
+                execSync("rm -rf \"" + dest + "\""); // 防冲突
+                execSync("cp -rL \"" + src + "\" \"" + dest + "\""); // 强行解除软链拷贝
+                console.log("✅ 精准捕获: " + pkgName);
+                return src;
+              } catch (e) {
+                console.log("⚠️ 未找到 (可能被优化了): " + pkgName);
+                return resolveFrom;
+              }
+            }
+            
+            // 顺藤摸瓜：从 app 找 shiki，再从 shiki 找它的底层引擎！
+            const shikiPath = copyPkg("shiki", appDir);
+            copyPkg("@shikijs/engine-oniguruma", shikiPath);
+            copyPkg("@shikijs/core", shikiPath);
+            copyPkg("@shikijs/transformers", shikiPath);
+          '
           
           echo "📦 开始打包 release.zip..."
           mkdir -p assets
