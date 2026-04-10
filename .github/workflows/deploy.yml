@@ -124,16 +124,23 @@ jobs:
             cp -rL "$APP_DIR/node_modules/@shikijs" "./deploy_standalone/node_modules/" 2>/dev/null || true
           fi
           
-          # ========== 关键修复：安装缺失的 @shikijs/engine-oniguruma ==========
-          echo "🔧 安装缺失的 shiki 运行时依赖 @shikijs/engine-oniguruma ..."
+          # ========== 最终修复：安装完整 shiki 并补全 .next/node_modules ==========
+          echo "🔧 安装完整 shiki 及其所有依赖 (core, engine-oniguruma 等)..."
           cd deploy_standalone
-          # 确保存在 package.json，如果没有则创建一个最小的
+          # 确保有 package.json
           if [ ! -f "package.json" ]; then
             echo '{"dependencies":{}}' > package.json
           fi
-          # 使用 npm 安装，--production 只安装 dependencies，--no-package-lock 避免生成 lock 文件
-          # --legacy-peer-deps 忽略 peer 依赖冲突（standalone 环境中通常没有冲突）
-          npm install @shikijs/engine-oniguruma --production --no-package-lock --legacy-peer-deps
+          # 安装 shiki（会拉取 @shikijs/core, @shikijs/engine-oniguruma 等）
+          npm install shiki --production --no-package-lock --legacy-peer-deps
+          
+          # 找到 .next/node_modules 目录（通常为 apps/web/.next/node_modules）
+          NEXT_NODE_MODULES=$(find . -path "*/apps/web/.next/node_modules" -type d | head -n1)
+          if [ -n "$NEXT_NODE_MODULES" ]; then
+            echo "📂 将 @shikijs 复制到 $NEXT_NODE_MODULES"
+            mkdir -p "$NEXT_NODE_MODULES"
+            cp -rL node_modules/@shikijs "$NEXT_NODE_MODULES/"
+          fi
           cd ..
           # ================================================================
           
