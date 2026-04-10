@@ -124,6 +124,19 @@ jobs:
             cp -rL "$APP_DIR/node_modules/@shikijs" "./deploy_standalone/node_modules/" 2>/dev/null || true
           fi
           
+          # ========== 关键修复：安装缺失的 @shikijs/engine-oniguruma ==========
+          echo "🔧 安装缺失的 shiki 运行时依赖 @shikijs/engine-oniguruma ..."
+          cd deploy_standalone
+          # 确保存在 package.json，如果没有则创建一个最小的
+          if [ ! -f "package.json" ]; then
+            echo '{"dependencies":{}}' > package.json
+          fi
+          # 使用 npm 安装，--production 只安装 dependencies，--no-package-lock 避免生成 lock 文件
+          # --legacy-peer-deps 忽略 peer 依赖冲突（standalone 环境中通常没有冲突）
+          npm install @shikijs/engine-oniguruma --production --no-package-lock --legacy-peer-deps
+          cd ..
+          # ================================================================
+          
           echo "📦 开始打包 release.zip..."
           mkdir -p assets
           cd deploy_standalone
@@ -131,7 +144,6 @@ jobs:
           cd ..
           echo "✅ 构建彻底完成！"
 
-      # ✨ 之前就是漏了这段！导致存不下来包！
       - name: Cache Build Artifacts
         id: cache-primes
         uses: actions/cache/save@v4
