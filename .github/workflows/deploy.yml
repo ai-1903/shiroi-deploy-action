@@ -60,7 +60,7 @@ jobs:
     if: ${{needs.check.outputs.canceled != 'true'}}
     strategy:
       matrix:
-        node-version: [20] # 精准对齐 package.json 的要求！
+        node-version: [20]
     outputs:
       sha_short: ${{ steps.store.outputs.sha_short }}
       branch: ${{ steps.store.outputs.branch }}
@@ -75,7 +75,6 @@ jobs:
       - name: Checkout LFS objects
         run: git lfs checkout
         
-      # ✨ 升级：使用最新版 v4 完美兼容你的 pnpm 10
       - uses: pnpm/action-setup@v4
         with:
           version: 10.27.0
@@ -129,7 +128,16 @@ jobs:
           mkdir -p assets
           cd deploy_standalone
           zip -q -r ../assets/release.zip ./*
+          cd ..
           echo "✅ 构建彻底完成！"
+
+      # ✨ 之前就是漏了这段！导致存不下来包！
+      - name: Cache Build Artifacts
+        id: cache-primes
+        uses: actions/cache/save@v4
+        with:
+          path: assets
+          key: ${{ github.run_number }}-release
 
       - id: store
         run: |
@@ -179,23 +187,19 @@ jobs:
             rm -rf /tmp/shiro
             
             echo "🔧 动态生成 PM2 配置文件..."
-            # 名字依然叫 Shiroi 保证你服务器以前的 PM2 能无缝重启！
             echo 'module.exports = { apps: [{ name: "Shiroi", script: "./server.js", cwd: __dirname, exec_mode: "fork", instances: 1, autorestart: true, watch: false, max_memory_restart: "500M", env: { NODE_ENV: "production", HOSTNAME: "0.0.0.0", PORT: process.env.PORT || 2323, NEXT_SHARP_PATH: process.env.NEXT_SHARP_PATH }, merge_logs: true }] }' > "$basedir/ecosystem.config.js"
             
             echo "🔍 正在进行物理路径对准..."
             SERVER_JS_PATH=$(find . -name "server.js" -not -path "*/node_modules/*" | head -n 1)
             APP_DIR=$(dirname "$SERVER_JS_PATH")
             
-            # ✨ 建立最底层的环境变量羁绊
             rm -rf "$APP_DIR/.env"
             ln -s "$HOME/shiro/.env" "$APP_DIR/.env"
             
             export NEXT_SHARP_PATH=$(npm root -g)/sharp
             
-            # ✨ 对准 PM2 入口到最底层真正的服务器
             ln -sf "$workdir/$SERVER_JS_PATH" "$basedir/server.js"
             
-            # ✨ 贯通缓存壁垒
             mkdir -p "$APP_DIR/.next"
             rm -rf "$APP_DIR/.next/cache"
             ln -sf "$basedir/.cache" "$APP_DIR/.next/cache"
