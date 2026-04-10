@@ -21,15 +21,11 @@ jobs:
     name: Prepare
     runs-on: ubuntu-latest
     if: ${{ github.event.head_commit.message != 'Update hash file' }}
-
     outputs:
       hash_content: ${{ steps.read_hash.outputs.hash_content }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Read HASH_FILE content
-        id: read_hash
+      - uses: actions/checkout@v4
+      - id: read_hash
         run: |
           content=$(cat ${{ env.HASH_FILE }}) || true
           echo "hash_content=$content" >> "$GITHUB_OUTPUT"
@@ -40,7 +36,6 @@ jobs:
     needs: prepare
     outputs:
       canceled: ${{ steps.use_content.outputs.canceled }}
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,21 +43,14 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           fetch-depth: 0
           lfs: true
-
-      - name: Use content from prev job and compare
-        id: use_content
+      - id: use_content
         env:
           FILE_HASH: ${{ needs.prepare.outputs.hash_content }}
         run: |
           file_hash=$FILE_HASH
           current_hash=$(git rev-parse --short HEAD)
-          echo "File Hash: $file_hash"
-          echo "Current Git Hash: $current_hash"
           if [ "$file_hash" == "$current_hash" ]; then
-            echo "Hashes match. Stopping workflow."
             echo "canceled=true" >> $GITHUB_OUTPUT
-          else
-            echo "Hashes do not match. Continuing workflow."
           fi
 
   build:
@@ -70,7 +58,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: check
     if: ${{needs.check.outputs.canceled != 'true'}}
-
     strategy:
       matrix:
         node-version: [lts/*]
@@ -88,9 +75,7 @@ jobs:
       - name: Checkout LFS objects
         run: git lfs checkout
       - uses: pnpm/action-setup@v2
-
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
@@ -105,115 +90,87 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_GATEWAY_URL: ${{ secrets.NEXT_PUBLIC_GATEWAY_URL }}
         run: |
-          echo "🚀 蝶儿强行接管构建流程..."
+          echo "🚀 蝶儿强行接管并执行构建..."
           pnpm build
           
-          echo "📦 开始智能打包..."
+          echo "📦 开始按照原版规范整理文件..."
           STANDALONE_DIR=$(find . -path "*/.next/standalone" -type d | head -n 1)
-          if [ -z "$STANDALONE_DIR" ]; then
-            echo "❌ 致命错误：找不到 standalone 目录！"
-            exit 1
-          fi
+          if [ -z "$STANDALONE_DIR" ]; then exit 1; fi
           
           NEXT_DIR=$(dirname "$STANDALONE_DIR")
           APP_DIR=$(dirname "$NEXT_DIR")
           
-          mkdir -p assets deploy_standalone
-          # 这里用 -rL 防止 standalone 内部有软链接！
-          cp -rL "$STANDALONE_DIR/." ./deploy_standalone/
+          # 把 standalone 改名为 deploy_standalone 防止冲突
+          mv "$STANDALONE_DIR" ./deploy_standalone
           
-          echo "✨ 开始修复静态资源迷路问题 (解除软链接封印)..."
-          TARGET_APP_DIR="./deploy_standalone/$APP_DIR"
-          mkdir -p "$TARGET_APP_DIR/.next"
+          # 解除软链复制静态文件！
+          cp -rL "$APP_DIR/public" "./deploy_standalone/public" || true
+          mkdir -p "./deploy_standalone/$APP_DIR/.next"
+          cp -rL "$NEXT_DIR/static" "./deploy_standalone/$APP_DIR/.next/static"
           
-          # 使用 -rL 拷贝本体，防止变死链！
-          cp -rL "$NEXT_DIR/static" "$TARGET_APP_DIR/.next/"
+          # 模拟原版追加 title
+          echo ';process.title = "Shiro (NextJS)"' >> "./deploy_standalone/server.js"
           
-          if [ -d "$APP_DIR/public" ]; then
-            cp -rL "$APP_DIR/public" "$TARGET_APP_DIR/"
+          # 提取原版配置文件
+          [ -f "$APP_DIR/ecosystem.standalone.config.cjs" ] && cp "$APP_DIR/ecosystem.standalone.config.cjs" "./deploy_standalone/ecosystem.config.js"
+          [ -f "$APP_DIR/.env.template" ] && cp "$APP_DIR/.env.template" "./deploy_standalone/.env.template"
+          
+          # 如果原版没有 ecosystem，蝶儿兜底生成！
+          if [ ! -f "./deploy_standalone/ecosystem.config.js" ]; then
+            cat << 'EOF' > ./deploy_standalone/ecosystem.config.js
+            module.exports = {
+              apps: [{
+                name: 'Shiroi', script: './server.js', cwd: __dirname, exec_mode: 'fork', instances: 1,
+                autorestart: true, watch: false, max_memory_restart: '500M',
+                env: { NODE_ENV: 'production', HOSTNAME: '0.0.0.0', PORT: process.env.PORT || 2323, NEXT_SHARP_PATH: process.env.NEXT_SHARP_PATH },
+                merge_logs: true
+              }]
+            }
+EOF
           fi
 
-          echo "✨ 蝶儿终极魔法：实体化被 Next.js 弄丢的 Shiki 依赖..."
-          # 从根目录拿
-          if [ -d "./node_modules/@shikijs" ]; then
-            mkdir -p ./deploy_standalone/node_modules/@shikijs
-            cp -rL ./node_modules/@shikijs/* ./deploy_standalone/node_modules/@shikijs/
-          fi
-          # 从子包目录拿
-          if [ -d "$APP_DIR/node_modules/@shikijs" ]; then
-            mkdir -p ./deploy_standalone/node_modules/@shikijs
-            cp -rL "$APP_DIR/node_modules/@shikijs"/* ./deploy_standalone/node_modules/@shikijs/
-          fi
-          # 保险起见，把 shiki 本体也拷过去
-          if [ -d "./node_modules/shiki" ]; then
-            mkdir -p ./deploy_standalone/node_modules/shiki
-            cp -rL ./node_modules/shiki/* ./deploy_standalone/node_modules/shiki/
-          fi
+          echo "✨ 蝶儿实体化魔法：动用 Node 引擎精准捕获 Shiki 本体！..."
+          node -e "
+            const path = require('path');
+            const { execSync } = require('child_process');
+            function copyPkg(pkg, target) {
+              try {
+                const pkgPath = require.resolve(pkg + '/package.json', { paths: [process.cwd() + '/$APP_DIR'] });
+                const srcDir = path.dirname(pkgPath);
+                execSync('mkdir -p \"' + target + '\" && cp -rL \"' + srcDir + '/\"* \"' + target + '/\"');
+                console.log('✅ 成功救回本体: ' + pkg);
+              } catch (e) {
+                console.log('⚠️ 找不到包，忽略: ' + pkg);
+              }
+            }
+            copyPkg('@shikijs/engine-oniguruma', './deploy_standalone/node_modules/@shikijs/engine-oniguruma');
+            copyPkg('@shikijs/core', './deploy_standalone/node_modules/@shikijs/core');
+            copyPkg('shiki', './deploy_standalone/node_modules/shiki');
+          "
           
-          echo "✨ 蝶儿施展魔法：凭空捏造 ecosystem.config.js..."
-          cat << 'EOF' > ./deploy_standalone/ecosystem.config.js
-          module.exports = {
-            apps: [
-              {
-                name: 'Shiroi',
-                script: './server.js',
-                cwd: __dirname,
-                exec_mode: 'fork',
-                instances: 1,
-                autorestart: true,
-                watch: false,
-                max_memory_restart: '500M',
-                env: {
-                  NODE_ENV: 'production',
-                  HOSTNAME: '0.0.0.0',
-                  PORT: process.env.PORT || 2323,
-                  NEXT_SHARP_PATH: process.env.NEXT_SHARP_PATH,
-                },
-                log_date_format: 'YYYY-MM-DD HH:mm:ss',
-                merge_logs: true,
-              },
-            ],
-          }
-          EOF
-          
-          mv ./deploy_standalone ./standalone
-          zip -q -r assets/release.zip standalone
-          echo "✅ 蝶儿打包魔法大功告成！"
+          echo "📦 开始打包 release.zip (绝对不用 --symlinks！)..."
+          mkdir -p assets
+          zip -q -r assets/release.zip deploy_standalone
+          echo "✅ 构建彻底完成！"
 
-      - name: Cache Build Artifacts
-        id: cache-primes
-        uses: actions/cache/save@v4
-        with:
-          path: assets
-          key: ${{ github.run_number }}-release
-
-      - name: Store artifact commit version
-        shell: bash
-        id: store
+      - id: store
         run: |
-          sha_short=$(git rev-parse --short HEAD)
-          branch_name=$(git rev-parse --abbrev-ref HEAD)
-          echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
-          echo "branch=$branch_name" >> "$GITHUB_OUTPUT"
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "branch=$(git rev-parse --abbrev-ref HEAD)" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy artifact
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Restore cached Build Artifacts
-        id: cache-primes-restore
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         with:
-          path: |
-            assets
+          path: assets
           key: ${{ github.run_number }}-release
           
-      - name: Move assets to root
-        run: mv assets/release.zip release.zip
+      - run: mv assets/release.zip release.zip
 
-      - name: copy file via ssh password
-        uses: appleboy/scp-action@v0.1.7
+      - uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USER }}
@@ -223,8 +180,7 @@ jobs:
           source: 'release.zip'
           target: '/tmp/shiro'
 
-      - name: Exec deploy script with SSH
-        uses: appleboy/ssh-action@master
+      - uses: appleboy/ssh-action@master
         with:
           command_timeout: 5m
           host: ${{ secrets.HOST }}
@@ -244,18 +200,18 @@ jobs:
             unzip -qq -o release.zip
             rm -rf /tmp/shiro
             
-            echo "🔧 正在部署配置文件..."
-            cp $workdir/standalone/ecosystem.config.js $basedir/ecosystem.config.js
+            echo "🔧 部署配置文件..."
+            cp $workdir/deploy_standalone/ecosystem.config.js $basedir/ecosystem.config.js
             
-            echo "🔍 智能搜寻 server.js 路径..."
-            SERVER_JS_PATH=$(find $workdir/standalone -name "server.js" -not -path "*/node_modules/*" | head -n 1)
+            echo "🔍 搜寻 server.js 路径..."
+            SERVER_JS_PATH=$(find $workdir/deploy_standalone -name "server.js" -not -path "*/node_modules/*" | head -n 1)
             APP_DIR=$(dirname "$SERVER_JS_PATH")
             
-            # 双重软链，确保无论在哪跑都能读到 .env
+            # 建立多重环境变量软链确保生效
             rm -rf $APP_DIR/.env
-            ln -s $HOME/shiro/.env $APP_DIR/.env
-            rm -rf $workdir/standalone/.env
-            ln -s $HOME/shiro/.env $workdir/standalone/.env
+            ln -sf $HOME/shiro/.env $APP_DIR/.env
+            rm -rf $workdir/deploy_standalone/.env
+            ln -sf $HOME/shiro/.env $workdir/deploy_standalone/.env
             
             export NEXT_SHARP_PATH=$(npm root -g)/sharp
             
@@ -267,50 +223,24 @@ jobs:
             
             cd $basedir
             echo "🚀 启动项目..."
-            if pm2 describe Shiroi >/dev/null 2>&1; then
-              pm2 reload ecosystem.config.js --update-env
-            else
-              pm2 start ecosystem.config.js --update-env
-            fi
-            
-            rm $workdir/release.zip
+            pm2 reload ecosystem.config.js --update-env || pm2 start ecosystem.config.js --update-env
             pm2 save
-            echo "✅ Deployed successfully"
-
-      - name: After deploy script
-        run: |
-          hash=${{ needs.build.outputs.sha_short }}
-          ${{ secrets.AFTER_DEPLOY_SCRIPT }}
+            rm $workdir/release.zip
+            echo "✅ 部署大满贯！"
 
   store:
     name: Store artifact commit version
     runs-on: ubuntu-latest
     needs: [deploy, build]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Use outputs from build
-        env:
-          SHA_SHORT: ${{ needs.build.outputs.sha_short }}
-          BRANCH: ${{ needs.build.outputs.branch }}
-        run: |
-          echo "SHA Short from build: $SHA_SHORT"
-          echo "Branch from build: $BRANCH"
-      - name: Write hash to file
-        env:
-          SHA_SHORT: ${{ needs.build.outputs.sha_short }}
-        run: echo $SHA_SHORT > ${{ env.HASH_FILE }}
-      - name: Commit files
-        run: |
+      - uses: actions/checkout@v4
+      - run: echo ${{ needs.build.outputs.sha_short }} > ${{ env.HASH_FILE }}
+      - run: |
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add ${{ env.HASH_FILE }}
           git commit -a -m "Update hash file"
-      - name: Push changes
-        uses: ad-m/github-push-action@master
+      - uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
