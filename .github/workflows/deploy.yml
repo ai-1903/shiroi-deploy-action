@@ -115,18 +115,9 @@ jobs:
           [ -f "$APP_DIR/ecosystem.standalone.config.cjs" ] && cp "$APP_DIR/ecosystem.standalone.config.cjs" "./deploy_standalone/ecosystem.config.js"
           [ -f "$APP_DIR/.env.template" ] && cp "$APP_DIR/.env.template" "./deploy_standalone/.env.template"
           
-          # 如果原版没有 ecosystem，蝶儿兜底生成！
+          # 如果原版没有 ecosystem，蝶儿用单行命令兜底生成！彻底解决打架问题！
           if [ ! -f "./deploy_standalone/ecosystem.config.js" ]; then
-            cat << 'EOF' > ./deploy_standalone/ecosystem.config.js
-            module.exports = {
-              apps: [{
-                name: 'Shiroi', script: './server.js', cwd: __dirname, exec_mode: 'fork', instances: 1,
-                autorestart: true, watch: false, max_memory_restart: '500M',
-                env: { NODE_ENV: 'production', HOSTNAME: '0.0.0.0', PORT: process.env.PORT || 2323, NEXT_SHARP_PATH: process.env.NEXT_SHARP_PATH },
-                merge_logs: true
-              }]
-            }
-EOF
+            echo "module.exports = { apps: [{ name: 'Shiroi', script: './server.js', cwd: __dirname, exec_mode: 'fork', instances: 1, autorestart: true, watch: false, max_memory_restart: '500M', env: { NODE_ENV: 'production', HOSTNAME: '0.0.0.0', PORT: process.env.PORT || 2323, NEXT_SHARP_PATH: process.env.NEXT_SHARP_PATH }, merge_logs: true }] }" > ./deploy_standalone/ecosystem.config.js
           fi
 
           echo "✨ 蝶儿实体化魔法：动用 Node 引擎精准捕获 Shiki 本体！..."
