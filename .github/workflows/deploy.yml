@@ -120,12 +120,23 @@ jobs:
           fi
           
           NEXT_DIR=$(dirname "$STANDALONE_DIR")
-          ROOT_DIR=$(dirname "$NEXT_DIR")
+          APP_DIR=$(dirname "$NEXT_DIR") # 魔法：智能识别出是 . 还是 apps/web
           
           mkdir -p assets deploy_standalone
           cp -a "$STANDALONE_DIR/." ./deploy_standalone/
-          cp -a "$NEXT_DIR/static" ./deploy_standalone/.next/
-          [ -d "$ROOT_DIR/public" ] && cp -a "$ROOT_DIR/public" ./deploy_standalone/
+          
+          echo "✨ 开始修复静态资源迷路问题..."
+          # 动态拼接出目标内部的真实应用路径
+          TARGET_APP_DIR="./deploy_standalone/$APP_DIR"
+          
+          # 划重点：确保目标 .next 文件夹存在，然后再把 static 放进去！
+          mkdir -p "$TARGET_APP_DIR/.next"
+          cp -a "$NEXT_DIR/static" "$TARGET_APP_DIR/.next/"
+          
+          # public 也一样，要放对真实的目录！
+          if [ -d "$APP_DIR/public" ]; then
+            cp -a "$APP_DIR/public" "$TARGET_APP_DIR/"
+          fi
           
           echo "✨ 蝶儿施展魔法：凭空捏造 ecosystem.config.js..."
           cat << 'EOF' > ./deploy_standalone/ecosystem.config.js
