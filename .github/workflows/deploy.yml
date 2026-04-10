@@ -4,7 +4,9 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 3 * * *'
+
   repository_dispatch:
     types: [trigger-workflow]
 
@@ -21,36 +23,47 @@ jobs:
     name: Prepare
     runs-on: ubuntu-latest
     if: ${{ github.event.head_commit.message != 'Update hash file' }}
+
     outputs:
       hash_content: ${{ steps.read_hash.outputs.hash_content }}
+
     steps:
-      - uses: actions/checkout@v4
-      - id: read_hash
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Read HASH_FILE content
+        id: read_hash
         run: |
           content=$(cat ${{ env.HASH_FILE }}) || true
           echo "hash_content=$content" >> "$GITHUB_OUTPUT"
-
   check:
     name: Check Should Rebuild
     runs-on: ubuntu-latest
     needs: prepare
     outputs:
       canceled: ${{ steps.use_content.outputs.canceled }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           repository: innei-dev/shiroi
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
           fetch-depth: 0
           lfs: true
-      - id: use_content
+
+      - name: Use content from prev job and compare
+        id: use_content
         env:
           FILE_HASH: ${{ needs.prepare.outputs.hash_content }}
         run: |
           file_hash=$FILE_HASH
           current_hash=$(git rev-parse --short HEAD)
+          echo "File Hash: $file_hash"
+          echo "Current Git Hash: $current_hash"
           if [ "$file_hash" == "$current_hash" ]; then
-            echo "canceled=true" >> "$GITHUB_OUTPUT"
+            echo "Hashes match. Stopping workflow."
+            echo "canceled=true" >> $GITHUB_OUTPUT
+          else
+            echo "Hashes do not match. Continuing workflow."
           fi
 
   build:
@@ -58,6 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: check
     if: ${{needs.check.outputs.canceled != 'true'}}
+
     strategy:
       matrix:
         node-version: [lts/*]
@@ -68,102 +82,76 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: innei-dev/shiroi
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GH_PAT }} # `GH_PAT` is a secret that contains your PAT
           fetch-depth: 0
           lfs: true
 
       - name: Checkout LFS objects
         run: git lfs checkout
       - uses: pnpm/action-setup@v2
-      - uses: actions/setup-node@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
       - uses: jongwooo/next-cache@v1
-      
       - name: Install dependencies
         run: pnpm install
-        
       - name: Build project
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_GATEWAY_URL: ${{ secrets.NEXT_PUBLIC_GATEWAY_URL }}
         run: |
-          echo "🚀 蝶儿强行接管并执行构建..."
-          pnpm build
-          
-          echo "📦 开始按照原版规范整理文件..."
-          STANDALONE_DIR=$(find . -path "*/.next/standalone" -type d | head -n 1)
-          if [ -z "$STANDALONE_DIR" ]; then exit 1; fi
-          
-          NEXT_DIR=$(dirname "$STANDALONE_DIR")
-          APP_DIR=$(dirname "$NEXT_DIR")
-          
-          # 把 standalone 改名为 deploy_standalone 防止冲突
-          mv "$STANDALONE_DIR" ./deploy_standalone
-          
-          # 解除软链复制静态文件！
-          cp -rL "$APP_DIR/public" "./deploy_standalone/public" || true
-          mkdir -p "./deploy_standalone/$APP_DIR/.next"
-          cp -rL "$NEXT_DIR/static" "./deploy_standalone/$APP_DIR/.next/static"
-          
-          # 模拟原版追加 title
-          echo ';process.title = "Shiro (NextJS)"' >> "./deploy_standalone/server.js"
-          
-          # 提取原版配置文件
-          [ -f "$APP_DIR/ecosystem.standalone.config.cjs" ] && cp "$APP_DIR/ecosystem.standalone.config.cjs" "./deploy_standalone/ecosystem.config.js"
-          [ -f "$APP_DIR/.env.template" ] && cp "$APP_DIR/.env.template" "./deploy_standalone/.env.template"
-          
-          # 纯享版单引号写入，彻底阻断 Linux 解析 $process 的行为！
-          if [ ! -f "./deploy_standalone/ecosystem.config.js" ]; then
-            echo 'module.exports = { apps: [{ name: "Shiroi", script: "./server.js", cwd: __dirname, exec_mode: "fork", instances: 1, autorestart: true, watch: false, max_memory_restart: "500M", env: { NODE_ENV: "production", HOSTNAME: "0.0.0.0", PORT: process.env.PORT || 2323, NEXT_SHARP_PATH: process.env.NEXT_SHARP_PATH }, merge_logs: true }] }' > ./deploy_standalone/ecosystem.config.js
-          fi
+          sh ./ci-release-build.sh
 
-          echo "✨ 蝶儿实体化魔法：精准捕获 Shiki 本体！..."
-          # 利用单引号保护内部的 process，并将外部 Bash 变量优雅地传进去
-          APP_DIR="$APP_DIR" node -e '
-            const path = require("path");
-            const { execSync } = require("child_process");
-            const appDir = process.env.APP_DIR;
-            function copyPkg(pkg, target) {
-              try {
-                const pkgPath = require.resolve(pkg + "/package.json", { paths: [process.cwd() + "/" + appDir] });
-                const srcDir = path.dirname(pkgPath);
-                execSync("mkdir -p " + target + " && cp -rL " + srcDir + "/* " + target + "/");
-                console.log("✅ 成功救回本体: " + pkg);
-              } catch (e) {
-                console.log("⚠️ 找不到包，忽略: " + pkg);
-              }
-            }
-            copyPkg("@shikijs/engine-oniguruma", "./deploy_standalone/node_modules/@shikijs/engine-oniguruma");
-            copyPkg("@shikijs/core", "./deploy_standalone/node_modules/@shikijs/core");
-            copyPkg("shiki", "./deploy_standalone/node_modules/shiki");
-          '
-          
-          echo "📦 开始打包 release.zip ..."
-          mkdir -p assets
-          zip -q -r assets/release.zip deploy_standalone
-          echo "✅ 构建彻底完成！"
+      # - uses: actions/upload-artifact@v4
+      #   with:
+      #     name: dist
+      #     path: assets/release.zip
+      #     retention-days: 7
+      - name: Cache Build Artifacts
+        id: cache-primes
+        uses: actions/cache/save@v4
+        with:
+          path: assets
+          key: ${{ github.run_number }}-release
 
-      - id: store
+      - name: Store artifact commit version
+        shell: bash
+        id: store
         run: |
-          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "branch=$(git rev-parse --abbrev-ref HEAD)" >> "$GITHUB_OUTPUT"
+          sha_short=$(git rev-parse --short HEAD)
+          branch_name=$(git rev-parse --abbrev-ref HEAD)
+          echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch_name" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy artifact
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/cache/restore@v4
-        with:
-          path: assets
-          key: ${{ github.run_number }}-release
-          
-      - run: mv assets/release.zip release.zip
+      # - name: Download artifact
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: dist
 
-      - uses: appleboy/scp-action@v0.1.7
+      - name: Restore cached Build Artifacts
+        id: cache-primes-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            assets
+          key: ${{ github.run_number }}-release
+      - name: Move assets to root
+        run: mv assets/release.zip release.zip
+
+      - name: Prepare standalone PM2 config
+        run: cp pm2/ecosystem.config.js ecosystem.config.js
+
+      - name: copy file via ssh password
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USER }}
@@ -173,7 +161,20 @@ jobs:
           source: 'release.zip'
           target: '/tmp/shiro'
 
-      - uses: appleboy/ssh-action@master
+      - name: copy PM2 config via ssh password
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          password: ${{ secrets.PASSWORD }}
+          key: ${{ secrets.KEY }}
+          port: ${{ secrets.PORT }}
+          source: 'ecosystem.config.js'
+          target: '/tmp/shiro'
+
+      - name: Exec deploy script with SSH
+        uses: appleboy/ssh-action@master
+
         with:
           command_timeout: 5m
           host: ${{ secrets.HOST }}
@@ -186,54 +187,68 @@ jobs:
             source $HOME/.bashrc
             basedir=$HOME/shiro
             workdir=$basedir/${{ github.run_number }}
-            mkdir -p $workdir $basedir/.cache
-            
+            mkdir -p $workdir
+            mkdir -p $basedir/.cache
             mv /tmp/shiro/release.zip $workdir/release.zip
+            install -m 644 /tmp/shiro/ecosystem.config.js $basedir/ecosystem.config.js
             cd $workdir
-            unzip -qq -o release.zip
-            rm -rf /tmp/shiro
-            
-            echo "🔧 部署配置文件..."
-            cp $workdir/deploy_standalone/ecosystem.config.js $basedir/ecosystem.config.js
-            
-            echo "🔍 搜寻 server.js 路径..."
-            SERVER_JS_PATH=$(find $workdir/deploy_standalone -name "server.js" -not -path "*/node_modules/*" | head -n 1)
-            APP_DIR=$(dirname "$SERVER_JS_PATH")
-            
-            # 建立多重环境变量软链确保生效
-            rm -rf $APP_DIR/.env
-            ln -sf $HOME/shiro/.env $APP_DIR/.env
-            rm -rf $workdir/deploy_standalone/.env
-            ln -sf $HOME/shiro/.env $workdir/deploy_standalone/.env
-            
+            unzip -qq -o $workdir/release.zip
+            rm -r /tmp/shiro
+            rm -rf $workdir/standalone/apps/web/.env
+            ln -s $HOME/shiro/.env $workdir/standalone/apps/web/.env
             export NEXT_SHARP_PATH=$(npm root -g)/sharp
-            
-            echo "🔗 建立运行层缓存与软链接..."
-            mkdir -p $APP_DIR/.next
-            rm -rf $APP_DIR/.next/cache
-            ln -sf $basedir/.cache $APP_DIR/.next/cache
-            ln -sf $SERVER_JS_PATH $basedir/server.js
-            
+            # https://github.com/Unitech/pm2/issues/3054
+            # symlink workdir node entry file to basedir
+            ln -sf $workdir/standalone/apps/web/server.js $basedir/server.js
+            mkdir -p $workdir/standalone/apps/web/.next
+            rm -rf $workdir/standalone/apps/web/.next/cache
+            ln -sf $basedir/.cache $workdir/standalone/apps/web/.next/cache
             cd $basedir
-            echo "🚀 启动项目..."
-            pm2 reload ecosystem.config.js --update-env || pm2 start ecosystem.config.js --update-env
-            pm2 save
+            if pm2 describe Shiroi >/dev/null 2>&1; then
+              pm2 reload ecosystem.config.js --update-env
+            else
+              pm2 start ecosystem.config.js --update-env
+            fi
             rm $workdir/release.zip
-            echo "✅ 部署大满贯！"
+            pm2 save
+            echo "Deployed successfully"
 
+      - name: After deploy script
+        run: |
+          hash=${{ needs.build.outputs.sha_short }}
+          # curl -X "POST" "https://mx.innei.in/api/v2/fn/shiro/new-version-hook" -H 'Content-Type: application/json' -d "{\"hash\": \"$hash\", \"key\": \"\"}"
+          ${{ secrets.AFTER_DEPLOY_SCRIPT }}
   store:
     name: Store artifact commit version
     runs-on: ubuntu-latest
     needs: [deploy, build]
     steps:
-      - uses: actions/checkout@v4
-      - run: echo ${{ needs.build.outputs.sha_short }} > ${{ env.HASH_FILE }}
-      - run: |
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false # otherwise, the token used is the GITHUB_TOKEN, instead of your personal token
+          fetch-depth: 0 # otherwise, you will failed to push refs to dest repo
+      # Get the commit version from the build job
+      - name: Use outputs from build
+        env:
+          SHA_SHORT: ${{ needs.build.outputs.sha_short }}
+          BRANCH: ${{ needs.build.outputs.branch }}
+        run: |
+          echo "SHA Short from build: $SHA_SHORT"
+          echo "Branch from build: $BRANCH"
+      - name: Write hash to file
+        env:
+          SHA_SHORT: ${{ needs.build.outputs.sha_short }}
+
+        run: echo $SHA_SHORT > ${{ env.HASH_FILE }}
+      - name: Commit files
+        run: |
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add ${{ env.HASH_FILE }}
           git commit -a -m "Update hash file"
-      - uses: ad-m/github-push-action@master
+      - name: Push changes
+        uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
