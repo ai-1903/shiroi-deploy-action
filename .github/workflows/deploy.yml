@@ -50,7 +50,7 @@ jobs:
           file_hash=$FILE_HASH
           current_hash=$(git rev-parse --short HEAD)
           if [ "$file_hash" == "$current_hash" ]; then
-            echo "canceled=true" >> $GITHUB_OUTPUT
+            echo "canceled=true" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -115,31 +115,33 @@ jobs:
           [ -f "$APP_DIR/ecosystem.standalone.config.cjs" ] && cp "$APP_DIR/ecosystem.standalone.config.cjs" "./deploy_standalone/ecosystem.config.js"
           [ -f "$APP_DIR/.env.template" ] && cp "$APP_DIR/.env.template" "./deploy_standalone/.env.template"
           
-          # 如果原版没有 ecosystem，蝶儿用单行命令兜底生成！彻底解决打架问题！
+          # 纯享版单引号写入，彻底阻断 Linux 解析 $process 的行为！
           if [ ! -f "./deploy_standalone/ecosystem.config.js" ]; then
-            echo "module.exports = { apps: [{ name: 'Shiroi', script: './server.js', cwd: __dirname, exec_mode: 'fork', instances: 1, autorestart: true, watch: false, max_memory_restart: '500M', env: { NODE_ENV: 'production', HOSTNAME: '0.0.0.0', PORT: process.env.PORT || 2323, NEXT_SHARP_PATH: process.env.NEXT_SHARP_PATH }, merge_logs: true }] }" > ./deploy_standalone/ecosystem.config.js
+            echo 'module.exports = { apps: [{ name: "Shiroi", script: "./server.js", cwd: __dirname, exec_mode: "fork", instances: 1, autorestart: true, watch: false, max_memory_restart: "500M", env: { NODE_ENV: "production", HOSTNAME: "0.0.0.0", PORT: process.env.PORT || 2323, NEXT_SHARP_PATH: process.env.NEXT_SHARP_PATH }, merge_logs: true }] }' > ./deploy_standalone/ecosystem.config.js
           fi
 
-          echo "✨ 蝶儿实体化魔法：动用 Node 引擎精准捕获 Shiki 本体！..."
-          node -e "
-            const path = require('path');
-            const { execSync } = require('child_process');
+          echo "✨ 蝶儿实体化魔法：精准捕获 Shiki 本体！..."
+          # 利用单引号保护内部的 process，并将外部 Bash 变量优雅地传进去
+          APP_DIR="$APP_DIR" node -e '
+            const path = require("path");
+            const { execSync } = require("child_process");
+            const appDir = process.env.APP_DIR;
             function copyPkg(pkg, target) {
               try {
-                const pkgPath = require.resolve(pkg + '/package.json', { paths: [process.cwd() + '/$APP_DIR'] });
+                const pkgPath = require.resolve(pkg + "/package.json", { paths: [process.cwd() + "/" + appDir] });
                 const srcDir = path.dirname(pkgPath);
-                execSync('mkdir -p \"' + target + '\" && cp -rL \"' + srcDir + '/\"* \"' + target + '/\"');
-                console.log('✅ 成功救回本体: ' + pkg);
+                execSync("mkdir -p " + target + " && cp -rL " + srcDir + "/* " + target + "/");
+                console.log("✅ 成功救回本体: " + pkg);
               } catch (e) {
-                console.log('⚠️ 找不到包，忽略: ' + pkg);
+                console.log("⚠️ 找不到包，忽略: " + pkg);
               }
             }
-            copyPkg('@shikijs/engine-oniguruma', './deploy_standalone/node_modules/@shikijs/engine-oniguruma');
-            copyPkg('@shikijs/core', './deploy_standalone/node_modules/@shikijs/core');
-            copyPkg('shiki', './deploy_standalone/node_modules/shiki');
-          "
+            copyPkg("@shikijs/engine-oniguruma", "./deploy_standalone/node_modules/@shikijs/engine-oniguruma");
+            copyPkg("@shikijs/core", "./deploy_standalone/node_modules/@shikijs/core");
+            copyPkg("shiki", "./deploy_standalone/node_modules/shiki");
+          '
           
-          echo "📦 开始打包 release.zip (绝对不用 --symlinks！)..."
+          echo "📦 开始打包 release.zip ..."
           mkdir -p assets
           zip -q -r assets/release.zip deploy_standalone
           echo "✅ 构建彻底完成！"
