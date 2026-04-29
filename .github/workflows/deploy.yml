@@ -242,7 +242,7 @@ jobs:
             rm -rf $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
             ln -sf $basedir/.cache $workdir/${{ env.STANDALONE_SUBPATH }}/.next/cache
             cd $basedir
-            if pm2 describe Yohaku >/dev/null 2>&1; then
+            if pm2 describe Shiroi >/dev/null 2>&1; then
               pm2 reload ecosystem.config.js --update-env
             else
               pm2 start ecosystem.config.js --update-env
