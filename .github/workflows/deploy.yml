@@ -162,8 +162,31 @@ jobs:
       - name: Move assets to root
         run: mv assets/release.zip release.zip
 
-      - name: Prepare standalone PM2 config
-        run: cp pm2/ecosystem.config.js ecosystem.config.js
+      - name: Create PM2 config file
+        run: |
+          cat > ecosystem.config.js << 'EOF'
+          module.exports = {
+            apps: [
+              {
+                name: 'Shiroi',
+                script: './server.js',
+                cwd: __dirname,
+                exec_mode: 'fork',
+                instances: 1,
+                autorestart: true,
+                watch: false,
+                max_memory_restart: '180M',
+                env: {
+                  NODE_ENV: 'production',
+                  HOSTNAME: '0.0.0.0',
+                  PORT: process.env.PORT || 2323,
+                },
+                log_date_format: 'YYYY-MM-DD HH:mm:ss',
+                merge_logs: true,
+              },
+            ],
+          };
+          EOF
 
       - name: copy file via ssh password
         uses: appleboy/scp-action@v0.1.7
