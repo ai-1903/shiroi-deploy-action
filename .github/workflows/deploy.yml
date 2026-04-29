@@ -96,7 +96,7 @@ jobs:
           NEXT_PUBLIC_GATEWAY_URL: ${{ secrets.NEXT_PUBLIC_GATEWAY_URL }}
         run: |
           echo "🚀 蝶儿强行接管：直接呼叫 Turbo 进行全量构建..."
-          pnpm build
+          pnpm exec turbo build --filter=@yohaku/web...
           
           echo "📦 智能寻路系统：定位 Next.js Standalone 产物..."
           STANDALONE_DIR=$(find . -path "*/.next/standalone" -type d | head -n 1)
